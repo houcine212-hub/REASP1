@@ -207,9 +207,10 @@ export default function About() {
               </div>
               <div style={nameStyle}>El Houcine Jibrane</div>
               <div style={descStyle}>
-                Freelancer full stack developer. Katheb l-code men 3and l-zero
-                l-7atta l-deploy. Khdem b React, Laravel, Node.js, w bzzaf men
-                technologies akhra. Hiya li bnat l-app kamal men backend l-frontend.
+                I'm El Houcine Jibrane, 22 years old, a specialized and advanced technician in Full Stack software
+                 development. I've worked on many projects, including EPG — an educational platform for
+                 epg.ma, a personal AI chat app, the Raazn Telegram bot system, and more.
+                I'm the developer behind the RESP1 app, handling both Frontend and Backend.
               </div>
             </div>
 
@@ -218,11 +219,15 @@ export default function About() {
                 <Palette size={14} />
                 UI/UX Designer
               </div>
-              <div style={nameStyle}>Ayoub</div>
+              <div style={nameStyle}>AYOUB AMHAL</div>
               <div style={descStyle}>
-                UI/UX designer dyal l-app. Hiya li 3tani l-idea w l-design dyal
-                kolchi. Khdem 3la l-7issaba w l-wajh dyal l-app bach tweli
-                sahla w zwin f l-3amal. Kol l-7wayej dyal design men 3ando.
+                I am a creative designer from Casablanca, Morocco, specializing in front-end development and print media design.
+                 I enjoy turning complex problems into simple, beautiful, and intuitive
+My job is to build your website so that it is both functional and easy
+to use while also being visually appealing. Moreover, I add a personal
+ touch to your product, ensuring that it is eye-catching and user-friendly.
+  My goal is to communicate your
+message and identity in the most creative way possible.
               </div>
             </div>
           </div>
@@ -283,7 +288,7 @@ export default function About() {
 
             <div style={emailStyle}>
               <Mail size={14} style={{ verticalAlign: 'middle', marginRight: '6px' }} />
-              houcinejibrane@gmail.com
+              onepiece9m12@gmail.com
             </div>
           </div>
         </motion.div>

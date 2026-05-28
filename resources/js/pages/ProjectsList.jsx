@@ -4,6 +4,7 @@ import { motion, AnimatePresence } from 'framer-motion';
 import { Pencil, Trash2, Check, X } from 'lucide-react';
 import Layout from '../components/Layout';
 import { getDashboard, deleteProject, updateProject } from '../services/api';
+import { setCache, getCache } from '../services/syncService';
 
 const pageStyle = {
   padding: '40px clamp(16px, 5vw, 30px)',
@@ -156,10 +157,17 @@ export default function ProjectsList() {
   const navigate = useNavigate();
 
   useEffect(() => {
-    getDashboard().then(res => {
-      setProjects(res.data.projects);
-      setTotal(res.data.total);
-    });
+    const cached = getCache('dashboard');
+    if (cached) { setProjects(cached.projects); setTotal(cached.total); }
+    getDashboard()
+      .then(res => {
+        setProjects(res.data.projects);
+        setTotal(res.data.total);
+        setCache('dashboard', res.data);
+      })
+      .catch(() => {
+        if (!cached) return;
+      });
   }, []);
 
   function handleOpen() {

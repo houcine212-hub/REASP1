@@ -1,5 +1,6 @@
 import { useState, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
+import { getPendingProjects } from '../services/offlineProjects';
 
 const navStyle = {
   background: 'linear-gradient(180deg, #f5f5f5 0%, #d8d8d8 100%)',
@@ -44,9 +45,10 @@ const menuStyle = {
   right: '0',
   background: '#111',
   width: '220px',
-  zIndex: 100,
+  zIndex: 9999,
   borderRadius: '0 0 0 12px',
   overflow: 'hidden',
+  boxShadow: '0 8px 24px rgba(0,0,0,0.35)',
 };
 
 const menuItemStyle = {
@@ -80,13 +82,23 @@ const linkStyle = {
 export default function Navbar() {
   const [open, setOpen] = useState(false);
   const [isDesktop, setIsDesktop] = useState(false);
+  const [pending, setPending] = useState([]);
   const navigate = useNavigate();
 
   useEffect(() => {
-    const check = () => setIsDesktop(window.innerWidth >= 768);
-    check();
-    window.addEventListener('resize', check);
-    return () => window.removeEventListener('resize', check);
+    setPending(getPendingProjects());
+
+    const onStorage = () => setPending(getPendingProjects());
+    const onResize = () => setIsDesktop(window.innerWidth >= 768);
+
+    onResize();
+    window.addEventListener('resize', onResize);
+    window.addEventListener('storage', onStorage);
+
+    return () => {
+      window.removeEventListener('resize', onResize);
+      window.removeEventListener('storage', onStorage);
+    };
   }, []);
 
   function go(path) {
@@ -95,7 +107,7 @@ export default function Navbar() {
   }
 
   return (
-    <div style={{ position: 'relative' }}>
+    <div style={{ position: 'relative', zIndex: 9999 }}>
       <div style={navStyle}>
         <span style={logoStyle} onClick={() => go('/')}>RESP1</span>
 
@@ -105,14 +117,19 @@ export default function Navbar() {
             <span style={linkStyle} onClick={() => go('/create')}>Create</span>
             <span style={linkStyle} onClick={() => go('/projects')}>Open</span>
             <span style={linkStyle} onClick={() => go('/all-projects')}>All</span>
+            <span style={linkStyle} onClick={() => go('/offline')}>
+              Offline {pending.length > 0 && `(${pending.length})`}
+            </span>
             <span style={linkStyle} onClick={() => go('/about')}>About</span>
           </div>
         ) : (
-          <button style={burgerStyle} onClick={() => setOpen(!open)}>
-            <div style={lineStyle}></div>
-            <div style={lineStyle}></div>
-            <div style={lineStyle}></div>
-          </button>
+          <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
+            <button style={burgerStyle} onClick={() => setOpen(!open)}>
+              <div style={lineStyle}></div>
+              <div style={lineStyle}></div>
+              <div style={lineStyle}></div>
+            </button>
+          </div>
         )}
       </div>
 
@@ -122,6 +139,9 @@ export default function Navbar() {
           <div style={menuItemStyle} onClick={() => go('/create')}>Create Project</div>
           <div style={menuItemStyle} onClick={() => go('/projects')}>Open Project</div>
           <div style={menuItemStyle} onClick={() => go('/all-projects')}>All Projects</div>
+          <div style={menuItemStyle} onClick={() => go('/offline')}>
+            Offline {pending.length > 0 && `(${pending.length})`}
+          </div>
           <div style={menuItemStyle} onClick={() => go('/about')}>About</div>
         </div>
       )}

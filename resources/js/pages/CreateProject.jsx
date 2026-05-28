@@ -1,10 +1,186 @@
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { motion } from 'framer-motion';
 import * as XLSX from 'xlsx';
 import mammoth from 'mammoth';
 import Layout from '../components/Layout';
 import { createProject, createArticle } from '../services/api';
+import {
+  getLocalProjects,
+  saveLocalProjects,
+  getOfflineQueue,
+  saveOfflineQueue,
+  syncOfflineProjects,
+} from '../services/offlineProjects';
+
+import * as pdfjsLib from 'pdfjs-dist';
+import pdfjsWorkerCode from 'pdfjs-dist/build/pdf.worker.min.mjs?raw';
+
+const EMPTY_ARTICLE = {
+  unit: '', emp_m: '', emp_cm: '', emp_max: '',
+  addr_r: '', addr_c: '',
+  palet: '', qte_palet: '',
+  cart: '', qte_cart: '',
+  sag: '', qte_sag: '',
+};
+
+function isValidArticle(art) {
+  return art && /^V\d+$/.test(String(art).trim());
+}
+
+function findCol(row, keys) {
+  for (const k of Object.keys(row)) {
+    if (keys.some(q => k.toString().toUpperCase().includes(q))) return row[k];
+  }
+  return '';
+}
+
+function parseExcel(buffer) {
+  const workbook = XLSX.read(new Uint8Array(buffer), { type: 'array' });
+  const sheet = workbook.Sheets[workbook.SheetNames[0]];
+  const rows = XLSX.utils.sheet_to_json(sheet, { defval: '' });
+  return rows
+    .map(row => ({
+      ...EMPTY_ARTICLE,
+      art: findCol(row, ['ARTICLE', 'ART']),
+      ref: findCol(row, ['CODE FRS', 'CODE FOURNISSEUR', 'REF']),
+      des: findCol(row, ['DESIGNATION', 'DÉSIGNATION', 'DES']),
+      total: findCol(row, ['QUANTITE TOTAL', 'QUANTITÉ TOTAL', 'QUANTITE', 'QUANTITÉ', 'TOTAL', 'QTE']),
+    }))
+    .filter(a => isValidArticle(a.art));
+}
+
+async function parseWord(buffer) {
+  const result = await mammoth.convertToHtml({ arrayBuffer: buffer });
+  const html = result.value;
+  const parser = new DOMParser();
+  const doc = parser.parseFromString(html, 'text/html');
+  const tables = doc.querySelectorAll('table');
+  const articles = [];
+
+  for (const table of tables) {
+    const rows = Array.from(table.querySelectorAll('tr'));
+    if (rows.length < 2) continue;
+
+    const headers = Array.from(rows[0].querySelectorAll('td, th'))
+      .map(c => c.textContent.trim().toUpperCase());
+
+    const idx = (keys) => headers.findIndex(h => keys.some(k => h.includes(k)));
+    const artIdx   = idx(['ARTICLE', 'ART']);
+    const desIdx   = idx(['DESIGNATION', 'DES']);
+    const refIdx   = idx(['CODE', 'REF']);
+    const totalIdx = idx(['QUANTITE', 'TOTAL', 'QTE']);
+
+    if (artIdx === -1 && refIdx === -1) continue;
+
+    for (let i = 1; i < rows.length; i++) {
+      const cells = Array.from(rows[i].querySelectorAll('td, th'))
+        .map(c => c.textContent.trim());
+      const art   = artIdx   >= 0 ? cells[artIdx]   || '' : '';
+      const des   = desIdx   >= 0 ? cells[desIdx]   || '' : '';
+      const ref   = refIdx   >= 0 ? cells[refIdx]   || '' : '';
+      const total = totalIdx >= 0 ? cells[totalIdx] || '' : '';
+      if (isValidArticle(art)) articles.push({ ...EMPTY_ARTICLE, art, ref, des, total });
+    }
+  }
+
+  return articles;
+}
+
+async function parsePDF(buffer) {
+  try {
+    if (!window.__pdfjsWorkerBlobUrl__) {
+      const blob = new Blob([pdfjsWorkerCode], { type: 'text/javascript' });
+      window.__pdfjsWorkerBlobUrl__ = URL.createObjectURL(blob);
+    }
+    pdfjsLib.GlobalWorkerOptions.workerSrc = window.__pdfjsWorkerBlobUrl__;
+
+    const loadingTask = pdfjsLib.getDocument({ data: new Uint8Array(buffer) });
+    const pdf = await loadingTask.promise;
+    const articles = [];
+
+    for (let p = 1; p <= pdf.numPages; p++) {
+      const page = await pdf.getPage(p);
+      const content = await page.getTextContent();
+
+      const items = content.items
+        .map(item => ({ text: item.str.trim(), x: Math.round(item.transform[4]), y: Math.round(item.transform[5]) }))
+        .filter(item => item.text);
+
+      const snapY = (y) => Math.round(y / 10) * 10;
+
+      const rowMap = {};
+      for (const item of items) {
+        const yKey = snapY(item.y);
+        if (!rowMap[yKey]) rowMap[yKey] = [];
+        rowMap[yKey].push(item);
+      }
+
+      const rows = Object.entries(rowMap)
+        .sort(([a], [b]) => Number(b) - Number(a))
+        .map(([, cells]) => cells.sort((a, b) => a.x - b.x));
+
+      const allItems = items;
+
+      const isArt   = t => t.toUpperCase().includes('ARTICLE');
+      const isDes   = t => /D.SIGNATION/i.test(t) || t.toUpperCase().includes('DESIGNATION');
+      const isRef   = t => t.toUpperCase().includes('CODE');
+      const isTotal = t => /QUANTIT/i.test(t) || t.toUpperCase() === 'TOTAL';
+
+      let colX = null;
+      let headerY = null;
+
+      for (const row of rows) {
+        const texts = row.map(c => c.text);
+        if (texts.some(isArt) || texts.some(isDes)) {
+          const nearby = allItems.filter(it => Math.abs(snapY(it.y) - snapY(row[0].y)) <= 10);
+          const artItem   = nearby.find(c => isArt(c.text));
+          const desItem   = nearby.find(c => isDes(c.text));
+          const refItem   = nearby.find(c => isRef(c.text));
+          const totalItem = nearby.find(c => isTotal(c.text));
+          if (artItem) {
+            colX = {
+              art:   artItem?.x,
+              des:   desItem?.x,
+              ref:   refItem?.x,
+              total: totalItem?.x,
+            };
+            headerY = snapY(row[0].y);
+            break;
+          }
+        }
+      }
+
+      if (!colX) continue;
+
+      const getClosest = (row, targetX) => {
+        if (targetX === undefined) return '';
+        let best = null;
+        let minDist = 120;
+        for (const cell of row) {
+          const dist = Math.abs(cell.x - targetX);
+          if (dist < minDist) { minDist = dist; best = cell; }
+        }
+        return best?.text || '';
+      };
+
+      const dataRows = rows.filter(row => snapY(row[0].y) < headerY);
+
+      for (const row of dataRows) {
+        const art   = getClosest(row, colX.art);
+        const ref   = getClosest(row, colX.ref);
+        const des   = getClosest(row, colX.des);
+        const total = getClosest(row, colX.total);
+        if (isValidArticle(art)) articles.push({ ...EMPTY_ARTICLE, art, ref, des, total });
+      }
+    }
+
+    return articles;
+  } catch (err) {
+    console.error('[PDF] Parse error:', err);
+    throw err;
+  }
+}
 
 const pageStyle = {
   display: 'flex',
@@ -24,7 +200,6 @@ const titleStyle = {
   color: '#111',
   marginBottom: '30px',
   textAlign: 'center',
-  wordBreak: 'break-word',
 };
 
 const fileBoxStyle = {
@@ -41,7 +216,6 @@ const fileBoxStyle = {
   fontSize: 'clamp(11px, 3vw, 13px)',
   color: '#777',
   boxSizing: 'border-box',
-  wordBreak: 'break-word',
 };
 
 const fileBoxActiveStyle = {
@@ -69,7 +243,6 @@ const previewRowStyle = {
   borderBottom: '1px solid #333',
   padding: '6px 0',
   lineHeight: '1.6',
-  wordBreak: 'break-word',
 };
 
 const btnStyle = {
@@ -95,7 +268,6 @@ const msgStyle = {
   color: '#555',
   marginBottom: '10px',
   textAlign: 'center',
-  wordBreak: 'break-word',
 };
 
 const typeBadgeStyle = {
@@ -108,63 +280,19 @@ const typeBadgeStyle = {
   marginBottom: '10px',
 };
 
-function findCol(row, keys) {
-  for (const k of Object.keys(row)) {
-    if (keys.some(q => k.toString().toUpperCase().includes(q))) {
-      return row[k];
-    }
-  }
-  return '';
-}
-
-function parseExcel(buffer) {
-  const workbook = XLSX.read(new Uint8Array(buffer), { type: 'array' });
-  const sheet = workbook.Sheets[workbook.SheetNames[0]];
-  const rows = XLSX.utils.sheet_to_json(sheet, { defval: '' });
-  return rows.map(row => ({
-    art: findCol(row, ['ARTICLE', 'ART']),
-    ref: findCol(row, ['CODE FRS', 'CODE FOURNISSEUR', 'REF']),
-    des: findCol(row, ['DESIGNATION', 'DÉSIGNATION', 'DES']),
-    total: findCol(row, ['QUANTITE TOTAL', 'QUANTITÉ TOTAL', 'QUANTITE', 'QUANTITÉ', 'TOTAL', 'QTE']),
-    unit: '',
-    emp_m: '', emp_cm: '', emp_max: '',
-    addr_r: '', addr_c: '',
-    palet: '', qte_palet: '',
-    cart: '', qte_cart: '',
-    sag: '', qte_sag: '',
-  })).filter(a => a.art || a.ref);
-}
-
-function parseTextLines(text) {
-  const lines = text.split('\n').map(l => l.trim()).filter(Boolean);
-  const articles = [];
-  let current = {};
-
-  for (const line of lines) {
-    const upper = line.toUpperCase();
-    if (upper.includes('ART')) current.art = line.split(/[-:]/)[1]?.trim() || '';
-    else if (upper.includes('REF')) current.ref = line.split(/[-:]/)[1]?.trim() || '';
-    else if (upper.includes('DES')) current.des = line.split(/[-:]/)[1]?.trim() || '';
-    else if (upper.includes('TOTAL') || upper.includes('QTE')) {
-      current.total = line.split(/[-:]/)[1]?.trim() || '';
-      articles.push({
-        art: current.art || '',
-        ref: current.ref || '',
-        des: current.des || '',
-        total: current.total || '',
-        unit: '',
-        emp_m: '', emp_cm: '', emp_max: '',
-        addr_r: '', addr_c: '',
-        palet: '', qte_palet: '',
-        cart: '', qte_cart: '',
-        sag: '', qte_sag: '',
-      });
-      current = {};
-    }
-  }
-
-  return articles.filter(a => a.art || a.ref);
-}
+const bannerStyle = {
+  width: '100%',
+  maxWidth: '340px',
+  marginBottom: '12px',
+  border: '1px solid #111',
+  borderRadius: '12px',
+  padding: '10px 16px',
+  boxSizing: 'border-box',
+  fontFamily: "'Share Tech Mono', monospace",
+  fontSize: '12px',
+  color: '#111',
+  background: '#f8f8f8',
+};
 
 export default function CreateProject() {
   const [name, setName] = useState('');
@@ -176,7 +304,31 @@ export default function CreateProject() {
   const [fileType, setFileType] = useState('');
   const [loading, setLoading] = useState(false);
   const [parsing, setParsing] = useState(false);
+  const [isOnline, setIsOnline] = useState(navigator.onLine);
+  const [syncStatus, setSyncStatus] = useState(null);
+  const [pendingCount, setPendingCount] = useState(() => getOfflineQueue().length);
   const navigate = useNavigate();
+
+  async function drainOfflineQueue() {
+    if (getOfflineQueue().length === 0) return;
+    setSyncStatus('syncing');
+    const failedCount = await syncOfflineProjects();
+    setPendingCount(getOfflineQueue().length);
+    setSyncStatus(failedCount === 0 ? 'done' : 'error');
+    setTimeout(() => setSyncStatus(null), 4000);
+  }
+
+  useEffect(() => {
+    const onOnline = () => { setIsOnline(true); drainOfflineQueue(); };
+    const onOffline = () => setIsOnline(false);
+    window.addEventListener('online', onOnline);
+    window.addEventListener('offline', onOffline);
+    if (navigator.onLine) drainOfflineQueue();
+    return () => {
+      window.removeEventListener('online', onOnline);
+      window.removeEventListener('offline', onOffline);
+    };
+  }, []);
 
   const inputWrapStyle = {
     position: 'relative',
@@ -226,40 +378,134 @@ export default function CreateProject() {
     if (!file) return;
     setFileName(file.name);
     setParsing(true);
-
+    setArticles([]);
     const ext = file.name.split('.').pop().toLowerCase();
     setFileType(ext);
-
     const buffer = await file.arrayBuffer();
-
     try {
       if (ext === 'xlsx' || ext === 'xls' || ext === 'csv') {
-        const result = parseExcel(buffer);
-        setArticles(result);
-      } else if (ext === 'docx') {
-        const result = await mammoth.extractRawText({ arrayBuffer: buffer });
-        const parsed = parseTextLines(result.value);
-        setArticles(parsed);
-      }
-    } catch {
-      alert('Error reading file');
-    }
+        setArticles(parseExcel(buffer));
+        try {
+          const ExcelJS = (await import('exceljs')).default ?? (await import('exceljs'));
+          const wbStyle = new ExcelJS.Workbook();
+          await wbStyle.xlsx.load(buffer);
+          const wsStyle = wbStyle.worksheets[0];
+          if (wsStyle) {
+            const extractCellStyle = (cell, row) => ({
+              font: cell?.font ? {
+                name:  cell.font.name  || 'Calibri',
+                size:  cell.font.size  || 11,
+                bold:  cell.font.bold  || false,
+                color: cell.font.color?.argb || 'FF000000',
+              } : { name: 'Calibri', size: 11, bold: false, color: 'FF000000' },
+              fill: cell?.fill?.type === 'pattern' && cell.fill.fgColor?.argb
+                ? { type: 'pattern', pattern: 'solid', fgColor: { argb: cell.fill.fgColor.argb } }
+                : { type: 'pattern', pattern: 'none' },
+              alignment: cell?.alignment
+                ? { horizontal: cell.alignment.horizontal || 'center', vertical: cell.alignment.vertical || 'middle' }
+                : { horizontal: 'center', vertical: 'middle' },
+              border: cell?.border ? {
+                top:    cell.border.top    ? { style: cell.border.top.style    || 'thin' } : undefined,
+                bottom: cell.border.bottom ? { style: cell.border.bottom.style || 'thin' } : undefined,
+                left:   cell.border.left   ? { style: cell.border.left.style   || 'thin' } : undefined,
+                right:  cell.border.right  ? { style: cell.border.right.style  || 'thin' } : undefined,
+              } : {},
+              rowHeight: row?.height || null,
+            });
 
+            const hRow = wsStyle.getRow(1);
+            let hCell = null;
+            hRow.eachCell((c) => { if (!hCell && c.value) hCell = c; });
+            const headerStyle = extractCellStyle(hCell, hRow);
+
+            const dRow = wsStyle.getRow(2);
+            let dCell = null;
+            dRow.eachCell((c) => { if (!dCell && c.value) dCell = c; });
+            const dataStyle = extractCellStyle(dCell, dRow);
+
+            const colWidths = [];
+            wsStyle.columns.forEach(col => colWidths.push(col.width || 13));
+
+            window.__xlsxStyle__ = { headerStyle, dataStyle, colWidths };
+          }
+        } catch (styleErr) {
+          console.warn('[style extract] failed:', styleErr);
+          window.__xlsxStyle__ = null;
+        }
+      } else if (ext === 'docx') {
+        setArticles(await parseWord(buffer));
+      } else if (ext === 'pdf') {
+        setArticles(await parsePDF(buffer));
+      }
+    } catch (err) {
+      console.error('[handleFile] Error:', err);
+      alert(`Error reading file: ${err?.message || 'Unknown error'}`);
+    }
     setParsing(false);
   }
 
   async function handleSave() {
     if (!name.trim()) return;
+
+    const localId = `local_${Date.now()}_${Math.random().toString(36).slice(2)}`;
+    const newProject = {
+      localId,
+      name: name.trim(),
+      type,
+      fileType,
+      xlsxStyle: window.__xlsxStyle__ || null,
+      articles,
+      savedAt: new Date().toISOString(),
+      synced: false,
+      projectId: null,
+    };
+
+    if (!navigator.onLine) {
+      const queue = getOfflineQueue();
+      queue.push({ ...newProject, tempId: localId });
+      saveOfflineQueue(queue);
+      setPendingCount(queue.length);
+
+      const projects = getLocalProjects();
+      projects.unshift(newProject);
+      saveLocalProjects(projects);
+
+      window.__xlsxStyle__ = null;
+      setName('');
+      setType('');
+      setArticles([]);
+      setFileName('');
+      setFileType('');
+      setSyncStatus('queued');
+      setTimeout(() => setSyncStatus(null), 5000);
+      return;
+    }
+
     setLoading(true);
     try {
-      const res = await createProject({ name, type });
+      const res = await createProject({ name: name.trim(), type });
       const projectId = res.data.id;
+      if (fileType) localStorage.setItem(`proj_fmt_${projectId}`, fileType);
+      if (window.__xlsxStyle__) {
+        localStorage.setItem(`proj_style_${projectId}`, JSON.stringify(window.__xlsxStyle__));
+        window.__xlsxStyle__ = null;
+      }
       for (const article of articles) {
         await createArticle(projectId, article);
       }
+
+      newProject.synced = true;
+      newProject.projectId = projectId;
+      const projects = getLocalProjects();
+      projects.unshift(newProject);
+      saveLocalProjects(projects);
+
       navigate(`/project/${projectId}`);
-    } catch {
-      alert('Error saving');
+    } catch (err) {
+      const msg = !navigator.onLine
+        ? 'Pas de connexion internet.'
+        : (err?.response?.data?.message || 'Error saving');
+      alert(msg);
     }
     setLoading(false);
   }
@@ -298,18 +544,16 @@ export default function CreateProject() {
           </div>
 
           <label style={fileName ? fileBoxActiveStyle : fileBoxStyle}>
-            {parsing ? 'Reading file...' : fileName ? fileName : 'Click to upload Excel / Word'}
+            {parsing ? 'Reading file...' : fileName || 'Click to upload Excel / Word / PDF'}
             <input
               type="file"
-              accept=".xlsx,.xls,.csv,.docx"
+              accept=".xlsx,.xls,.csv,.docx,.pdf"
               style={{ display: 'none' }}
               onChange={handleFile}
             />
           </label>
 
-          {fileType && (
-            <div style={typeBadgeStyle}>{fileType.toUpperCase()} detected</div>
-          )}
+          {fileType && <div style={typeBadgeStyle}>{fileType.toUpperCase()}</div>}
 
           {articles.length > 0 && (
             <>
@@ -322,22 +566,56 @@ export default function CreateProject() {
                   </div>
                 ))}
                 {articles.length > 5 && (
-                  <div style={{ padding: '6px 0', color: '#aaa' }}>
-                    +{articles.length - 5} more...
-                  </div>
+                  <div style={{ padding: '6px 0', color: '#aaa' }}>+{articles.length - 5} more...</div>
                 )}
               </div>
             </>
           )}
 
           {articles.length === 0 && fileName && !parsing && (
-            <div style={{ ...msgStyle, color: '#e44' }}>
-              No articles detected — check column names (ART, REF, DES, TOTAL)
+            <div style={{ ...msgStyle, color: '#111' }}>
+              No articles detected — check columns (ARTICLE, DESIGNATION, CODE FRS, QUANTITE TOTAL)
+            </div>
+          )}
+
+          {!isOnline && (
+            <div style={bannerStyle}>
+              OFFLINE — projet sera sauvegarde localement.
+            </div>
+          )}
+
+          {syncStatus === 'queued' && (
+            <div style={bannerStyle}>
+              QUEUED — synchronisation automatique a la reconnexion.
+            </div>
+          )}
+
+          {syncStatus === 'syncing' && (
+            <div style={bannerStyle}>
+              SYNCING — synchronisation en cours...
+            </div>
+          )}
+
+          {syncStatus === 'done' && (
+            <div style={bannerStyle}>
+              DONE — tous les projets synchronises.
+            </div>
+          )}
+
+          {syncStatus === 'error' && (
+            <div style={bannerStyle}>
+              ERROR — certains projets non synchronises.
+            </div>
+          )}
+
+          {pendingCount > 0 && isOnline && syncStatus === null && (
+            <div style={bannerStyle}>
+              {pendingCount} projet(s) en attente de synchronisation.
             </div>
           )}
 
           <button style={btnStyle} onClick={handleSave} disabled={loading || parsing}>
-            {loading ? 'Saving...' : 'SAVE'}
+            {loading ? 'Saving...' : !isOnline ? 'SAVE OFFLINE' : 'SAVE'}
           </button>
         </motion.div>
       </div>

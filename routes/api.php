@@ -28,5 +28,3 @@ Route::delete('/articles/{id}', [ArticleController::class, 'destroy']);
 Route::get('/projects/{id}/export/csv', [ExportController::class, 'csv']);
 
 Route::post('/contact', [ContactController::class, 'send']);
-
-Route::get('/projects/{id}/articles', [ArticleController::class, 'index']);

@@ -24,3 +24,8 @@ dist-ssr
 *.sw?
 /database/database.sqlite
 /database/*.sqlite
+node_modules
+vendor
+.env
+public/hot
+cloudflared-windows-amd64.exe

@@ -29,3 +29,8 @@ vendor
 .env
 public/hot
 cloudflared-windows-amd64.exe
+public/build/
+storage/logs/
+storage/framework/cache/
+storage/framework/sessions/
+storage/framework/views/"cloudflared-windows-amd64.exe" 

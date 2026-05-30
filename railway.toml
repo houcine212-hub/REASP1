@@ -1,0 +1,5 @@
+[deploy]
+startCommand = "php artisan migrate --force && /start-container.sh"
+
+[variables]
+SERVER_NAME = ":${PORT}"

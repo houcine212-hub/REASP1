@@ -12,7 +12,7 @@ const overlayStyle = {
   alignItems: 'center',
   justifyContent: 'center',
   padding: '16px',
-  zIndex: 1000,
+  zIndex: 9999,
 };
 
 const cardStyle = {

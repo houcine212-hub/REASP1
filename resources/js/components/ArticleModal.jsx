@@ -21,7 +21,7 @@ const cardStyle = {
   padding: 'clamp(20px, 5vw, 32px)',
   width: '100%',
   maxWidth: '420px',
-  maxHeight: '90vh',
+  maxHeight: 70vh',
   overflowY: 'auto',
   position: 'relative',
   color: '#fff',

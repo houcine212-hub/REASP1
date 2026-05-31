@@ -1,3 +1,2 @@
-$null 
 [deploy]
 startCommand = "php artisan migrate --force && /start-container.sh"
